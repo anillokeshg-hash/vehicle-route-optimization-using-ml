@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vehicle Route Optimization Using ML</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #f2f4f8; color: #222; }
+  header { background: #0f4c5c; color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 22px; }
+  .wrap { padding: 20px 24px; max-width: 1150px; margin: auto; }
+  .panel { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  .controls { display: flex; gap: 18px; flex-wrap: wrap; align-items: end; }
+  .controls label { font-size: 13px; color: #555; display: block; margin-bottom: 4px; }
+  .controls input[type=number] { width: 70px; padding: 6px; }
+  button { padding: 9px 16px; border: 0; border-radius: 6px; background: #0f4c5c; color: #fff; cursor: pointer; }
+  .cards { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+  .card { flex: 1; min-width: 150px; background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  .card h3 { margin: 0 0 6px; font-size: 13px; color: #666; font-weight: normal; }
+  .card .val { font-size: 26px; font-weight: bold; }
+  #map { height: 430px; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
+  th { background: #fafafa; }
+  .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; }
+  .num { background: #fff; border: 2px solid; border-radius: 50%; width: 22px; height: 22px; text-align: center;
+         line-height: 18px; font-size: 12px; font-weight: bold; }
+</style>
+</head>
+<body>
+<header><h1>Vehicle Route Optimization Using ML</h1></header>
+<div class="wrap">
+  <div class="panel controls">
+    <div><label>Delivery stops</label><input type="number" id="stops" value="12" min="2" max="40"></div>
+    <div><label>Vehicles</label><input type="number" id="vehicles" value="2" min="1" max="6"></div>
+    <div><label>Departure hour (0-23)</label><input type="number" id="hour" value="9" min="0" max="23"></div>
+    <div><label><input type="checkbox" id="weekend"> Weekend</label></div>
+    <button id="go">Optimize Routes</button>
+  </div>
+
+  <div class="cards">
+    <div class="card"><h3>Unoptimized time (min)</h3><div class="val" id="naive">-</div></div>
+    <div class="card"><h3>Optimized time (min)</h3><div class="val" style="color:#1a8f3c" id="opt">-</div></div>
+    <div class="card"><h3>Time saved</h3><div class="val" style="color:#1a8f3c" id="saved">-</div></div>
+    <div class="card"><h3>Distance (km)</h3><div class="val" id="km">-</div></div>
+  </div>
+
+  <div class="panel"><div id="map"></div></div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">Optimized Routes</h3>
+    <table>
+      <thead><tr><th>Vehicle</th><th>Route (stop order)</th><th>Unoptimized (min)</th><th>Optimized (min)</th><th>Distance (km)</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const COLORS = ["#d62828", "#1d6fa5", "#2a9d8f", "#e08a00", "#7b2cbf", "#444444"];
+let map = null, layer = null;
+
+async function run() {
+  const q = new URLSearchParams({
+    stops: document.getElementById("stops").value,
+    vehicles: document.getElementById("vehicles").value,
+    hour: document.getElementById("hour").value,
+    weekend: document.getElementById("weekend").checked ? 1 : 0,
+    seed: Math.floor(Math.random() * 100000),
+  });
+  const d = await (await fetch("/api/optimize?" + q)).json();
+
+  if (!map) {
+    map = L.map("map").setView([d.stops[0].lat, d.stops[0].lon], 12);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+  }
+  if (layer) layer.remove();
+  layer = L.layerGroup().addTo(map);
+
+  const s = d.summary;
+  document.getElementById("naive").textContent = s.naive_min;
+  document.getElementById("opt").textContent = s.optimized_min;
+  document.getElementById("saved").textContent = s.time_saved_pct + "%";
+  document.getElementById("km").textContent = s.optimized_km + " (was " + s.naive_km + ")";
+
+  const depot = d.stops[0];
+  L.marker([depot.lat, depot.lon], { title: "Depot" }).addTo(layer).bindPopup("<b>Depot</b>");
+
+  d.routes.forEach((r, idx) => {
+    const color = COLORS[idx % COLORS.length];
+    const pts = r.route.map(i => [d.stops[i].lat, d.stops[i].lon]);
+    L.polyline(pts, { color, weight: 4, opacity: 0.85 }).addTo(layer);
+    r.route.slice(1, -1).forEach((id, order) => {
+      const st = d.stops[id];
+      L.marker([st.lat, st.lon], {
+        icon: L.divIcon({ className: "", html: `<div class="num" style="border-color:${color};color:${color}">${order + 1}</div>`, iconSize: [22, 22] }),
+      }).addTo(layer).bindPopup(`${st.name}<br>Vehicle ${r.vehicle}, visit #${order + 1}`);
+    });
+  });
+
+  document.getElementById("rows").innerHTML = d.routes.map((r, idx) => `
+    <tr>
+      <td><span class="dot" style="background:${COLORS[idx % COLORS.length]}"></span>Vehicle ${r.vehicle}</td>
+      <td>${r.route.map(i => i === 0 ? "Depot" : "S" + i).join(" → ")}</td>
+      <td>${r.naive_min}</td><td><b>${r.optimized_min}</b></td><td>${r.optimized_km}</td>
+    </tr>`).join("");
+}
+
+document.getElementById("go").onclick = run;
+run();
+</script>
+</body>
+</html>
